@@ -11,6 +11,47 @@ import medmnist
 from models import ResNet18
 from SVC_MIA import get_mia_efficiency
 
+def js_div(p, q):
+    m = 0.5 * (p + q)
+    return 0.5 * (torch.nn.functional.kl_div(p, m, reduction='sum') + torch.nn.functional.kl_div(q, m, reduction='sum'))
+
+def dist_model_output(data_loader, task, model1, model2, device):
+    model1 = model1.to(device)
+    model1.eval()
+    model2 = model2.to(device)
+    model2.eval()
+
+    outputs1 = []
+    outputs2 = []
+
+    with torch.no_grad():
+        for batch_idx, (inputs, targets) in enumerate(data_loader):
+            output1 = model1(inputs.to(device))
+            output2 = model2(inputs.to(device))
+
+            if task == "multi-label, binary-class":
+                m = torch.nn.Sigmoid()
+                outputs1.append(m(output1).to(device))
+                outputs2.append(m(output2).to(device))
+            else:
+                m = torch.nn.Softmax(dim=1)
+
+            outputs1.append(m(output1).to(device))
+            outputs2.append(m(output2).to(device))
+    
+    return js_div(torch.cat(outputs1), torch.cat(outputs2)).item()
+
+
+def dist_model_parameter(model1, model2, device):
+    dist = torch.tensor(0.0, device=device)
+    model1 = model1.to(device)
+    model2 = model2.to(device)
+    for param in model1.state_dict():
+        if 'weight' in param or 'bias' in param:
+            diff = torch.subtract(model1.state_dict()[param], model2.state_dict()[param]) 
+            pow_diff = torch.pow(diff, 2)
+            dist += torch.sum(pow_diff).item()
+    return torch.sqrt(dist).item()
 
 def test(model, data_loader, task, criterion, num_classes, device):
     model = model.to(device)
@@ -109,6 +150,7 @@ def load_dataset(data_flag, size=28):
 def eval(
     retrain_dir_path,
     target_model_path,
+    retrain_model_path,
     label,
     n_channels,
     n_classes,
@@ -125,25 +167,30 @@ def eval(
 ):
     target_model = ResNet18(in_channels=n_channels, num_classes=n_classes)
     target_model.load_state_dict(torch.load(target_model_path))
+    retrain_model = ResNet18(in_channels=n_channels, num_classes=n_classes)
+    retrain_model.load_state_dict(torch.load(retrain_model_path))
 
     target_result = {
-        "val": test(target_model, val_loader, task, criterion, n_classes, "cuda"),
+        # "val": test(target_model, val_loader, task, criterion, n_classes, "cuda"),
         "test": test(target_model, test_loader, task, criterion, n_classes, "cuda"),
         "forget": test(target_model, forget_loader, task, criterion, n_classes, "cuda"),
         "retain": test(target_model, retain_loader, task, criterion, n_classes, "cuda"),
-        "mia_val": 100
-        * get_mia_efficiency(
-            mia_forget_dataset, mia_retain_dataset, mia_val_dataset, target_model
-        ),
+        # "mia_val": 100
+        # * get_mia_efficiency(
+        #     mia_forget_dataset, mia_retain_dataset, mia_val_dataset, target_model
+        # ),
         "mia_test": 100
         * get_mia_efficiency(
             mia_forget_dataset, mia_retain_dataset, mia_test_dataset, target_model
         ),
+        "weight_dist": dist_model_parameter(target_model, retrain_model, device="cuda"),
+        'output_dist': dist_model_output(test_loader, task, target_model, retrain_model, device="cuda")
     }
     print(target_result)
     with open(f"{retrain_dir_path}/eval.csv", "a") as f:
         f.write(
-            f'{label},{target_result["val"]},{target_result["test"]},{target_result["forget"]},{target_result["retain"]},{target_result["mia_val"]},{target_result["mia_test"]}\n'
+            # f'{label},{target_result["val"]},{target_result["test"]},{target_result["forget"]},{target_result["retain"]},{target_result["mia_val"]},{target_result["mia_test"]}\n'
+            f'{label},{target_result["test"]},{target_result["forget"]},{target_result["retain"]},{target_result["mia_test"]},{target_result["weight_dist"]}\n'
         )
 
 
@@ -220,11 +267,12 @@ def main2(data_flag, rate, index, batch_size=128, num_workers=2):
     else:
         criterion = torch.nn.CrossEntropyLoss()
 
-    target_model_path = f"/data1/keito/bachelor/model/{data_flag}/target/best_model.pth"
+    target_model_path = f"/data1/keito/bachelor/model/{data_flag}/target_{index}/best_model.pth"
     retrain_dir_path = f"/data1/keito/bachelor/model/{data_flag}/retrain_{rate}_{index}"
     eval(
         retrain_dir_path,
         target_model_path,
+        os.path.join(retrain_dir_path, "best_model.pth"),
         "target",
         n_channels,
         n_classes,
@@ -241,6 +289,7 @@ def main2(data_flag, rate, index, batch_size=128, num_workers=2):
     )
     eval(
         retrain_dir_path,
+        os.path.join(retrain_dir_path, "best_model.pth"),
         os.path.join(retrain_dir_path, "best_model.pth"),
         "retain",
         n_channels,
@@ -290,74 +339,115 @@ def main2(data_flag, rate, index, batch_size=128, num_workers=2):
     #     mia_val_dataset,
     #     mia_test_dataset,
     # )
-    eval(
-        retrain_dir_path,
-        os.path.join(retrain_dir_path, "RL_10_model.pth"),
-        "RL_10",
-        n_channels,
-        n_classes,
-        task,
-        criterion,
-        val_loader,
-        test_loader,
-        forget_loader,
-        retain_loader,
-        mia_forget_dataset,
-        mia_retain_dataset,
-        mia_val_dataset,
-        mia_test_dataset,
-    )
-    eval(
-        retrain_dir_path,
-        os.path.join(retrain_dir_path, "RL_20_model.pth"),
-        "RL_20",
-        n_channels,
-        n_classes,
-        task,
-        criterion,
-        val_loader,
-        test_loader,
-        forget_loader,
-        retain_loader,
-        mia_forget_dataset,
-        mia_retain_dataset,
-        mia_val_dataset,
-        mia_test_dataset,
-    )
-    eval(
-        retrain_dir_path,
-        os.path.join(retrain_dir_path, "saliency/RL_10_0.7_model.pth"),
-        "RL_10_sal",
-        n_channels,
-        n_classes,
-        task,
-        criterion,
-        val_loader,
-        test_loader,
-        forget_loader,
-        retain_loader,
-        mia_forget_dataset,
-        mia_retain_dataset,
-        mia_val_dataset,
-        mia_test_dataset,
-    )
-    eval(
-        retrain_dir_path,
-        os.path.join(retrain_dir_path, "saliency/RL_20_0.7_model.pth"),
-        "RL_20_sal",
-        n_channels,
-        n_classes,
-        task,
-        criterion,
-        val_loader,
-        test_loader,
-        forget_loader,
-        retain_loader,
-        mia_forget_dataset,
-        mia_retain_dataset,
-        mia_val_dataset,
-        mia_test_dataset,
-    )
+    for i in range(5, 51, 5):
+        eval(
+            retrain_dir_path,
+            os.path.join(retrain_dir_path, f"RL_{i}_model.pth"),
+            os.path.join(retrain_dir_path, "best_model.pth"),
+            f"RL_{i}",
+            n_channels,
+            n_classes,
+            task,
+            criterion,
+            val_loader,
+            test_loader,
+            forget_loader,
+            retain_loader,
+            mia_forget_dataset,
+            mia_retain_dataset,
+            mia_val_dataset,
+            mia_test_dataset,
+        ) 
+        eval(
+            retrain_dir_path,
+            os.path.join(retrain_dir_path, f"saliency/RL_{i}_0.7_model.pth"),
+            os.path.join(retrain_dir_path, "best_model.pth"),
+            f"RL_{i}_sal",
+            n_channels,
+            n_classes,
+            task,
+            criterion,
+            val_loader,
+            test_loader,
+            forget_loader,
+            retain_loader,
+            mia_forget_dataset,
+            mia_retain_dataset,
+            mia_val_dataset,
+            mia_test_dataset,
+        ) 
+    # eval(
+    #     retrain_dir_path,
+    #     os.path.join(retrain_dir_path, "RL_10_model.pth"),
+    #     os.path.join(retrain_dir_path, "best_model.pth"),
+    #     "RL_10",
+    #     n_channels,
+    #     n_classes,
+    #     task,
+    #     criterion,
+    #     val_loader,
+    #     test_loader,
+    #     forget_loader,
+    #     retain_loader,
+    #     mia_forget_dataset,
+    #     mia_retain_dataset,
+    #     mia_val_dataset,
+    #     mia_test_dataset,
+    # )
+    # eval(
+    #     retrain_dir_path,
+    #     os.path.join(retrain_dir_path, "RL_20_model.pth"),
+    #     os.path.join(retrain_dir_path, "best_model.pth"),
+    #     "RL_20",
+    #     n_channels,
+    #     n_classes,
+    #     task,
+    #     criterion,
+    #     val_loader,
+    #     test_loader,
+    #     forget_loader,
+    #     retain_loader,
+    #     mia_forget_dataset,
+    #     mia_retain_dataset,
+    #     mia_val_dataset,
+    #     mia_test_dataset,
+    # )
+    # eval(
+    #     retrain_dir_path,
+    #     os.path.join(retrain_dir_path, "saliency/RL_10_0.7_model.pth"),
+    #     os.path.join(retrain_dir_path, "best_model.pth"),
+    #     "RL_10_sal",
+    #     n_channels,
+    #     n_classes,
+    #     task,
+    #     criterion,
+    #     val_loader,
+    #     test_loader,
+    #     forget_loader,
+    #     retain_loader,
+    #     mia_forget_dataset,
+    #     mia_retain_dataset,
+    #     mia_val_dataset,
+    #     mia_test_dataset,
+    # )
+    # eval(
+    #     retrain_dir_path,
+    #     os.path.join(retrain_dir_path, "saliency/RL_20_0.7_model.pth"),
+    #     os.path.join(retrain_dir_path, "best_model.pth"),
+    #     "RL_20_sal",
+    #     n_channels,
+    #     n_classes,
+    #     task,
+    #     criterion,
+    #     val_loader,
+    #     test_loader,
+    #     forget_loader,
+    #     retain_loader,
+    #     mia_forget_dataset,
+    #     mia_retain_dataset,
+    #     mia_val_dataset,
+    #     mia_test_dataset,
+    # )
     print(f"time: {time.perf_counter() - start_time}")
 
 
@@ -408,16 +498,17 @@ def main(model_path, data_flag, rate=None, index=None):
             f"mia(test): {100 * get_mia_efficiency(forget_loader.dataset, retain_loader.dataset, test_dataset, model)}"
         )
 
+
 print('eval')
-#main2("pathmnist", 0.1, 0)
-#main2("pathmnist", 0.3, 0)
-#main2("pathmnist", 0.5, 0)
+main2("pathmnist", 0.1, 0)
+main2("pathmnist", 0.3, 0)
+main2("pathmnist", 0.5, 0)
 main2("octmnist", 0.1, 0)
 main2("octmnist", 0.3, 0)
 main2("octmnist", 0.5, 0)
-# main2("tissuemnist", 0.1, 0)
-# main2("tissuemnist", 0.3, 0)
-# main2("tissuemnist", 0.5, 0)
+main2("tissuemnist", 0.1, 0)
+main2("tissuemnist", 0.3, 0)
+main2("tissuemnist", 0.5, 0)
 
 # main2("tissuemnist", 0.5, 0)
 # main("/data1/keito/bachelor/model/pathmnist/target/best_model.pth", "pathmnist")
