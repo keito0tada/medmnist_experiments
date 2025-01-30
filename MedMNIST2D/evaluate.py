@@ -1,6 +1,7 @@
 import pickle
 import os
 import time
+import numpy as np
 
 import torch
 import torchvision
@@ -11,9 +12,10 @@ import medmnist
 from models import ResNet18
 from SVC_MIA import get_mia_efficiency
 
-def js_div(p, q):
-    m = 0.5 * (p + q)
-    return 0.5 * (torch.nn.functional.kl_div(p, m, reduction='sum') + torch.nn.functional.kl_div(q, m, reduction='sum'))
+def js_div(p, q, m, n):
+    kl_loss = torch.nn.KLDivLoss(reduction="batchmean")
+    r = 0.5 * (m(p) + m(q))
+    return 0.5 * (kl_loss(n(p), r) + kl_loss(n(q), r))
 
 def dist_model_output(data_loader, task, model1, model2, device):
     model1 = model1.to(device)
@@ -21,25 +23,31 @@ def dist_model_output(data_loader, task, model1, model2, device):
     model2 = model2.to(device)
     model2.eval()
 
-    outputs1 = []
-    outputs2 = []
-
+    output1 = []
+    output2 = []
+    # js_divs = []
     with torch.no_grad():
         for batch_idx, (inputs, targets) in enumerate(data_loader):
-            output1 = model1(inputs.to(device))
-            output2 = model2(inputs.to(device))
-
-            if task == "multi-label, binary-class":
-                m = torch.nn.Sigmoid()
-                outputs1.append(m(output1).to(device))
-                outputs2.append(m(output2).to(device))
-            else:
-                m = torch.nn.Softmax(dim=1)
-
-            outputs1.append(m(output1).to(device))
-            outputs2.append(m(output2).to(device))
+            inputs = inputs.to(device)
+            output1.append(model1(inputs))
+            output2.append(model2(inputs))
+            # if task == "multi-label, binary-class":
+            #     m = torch.nn.Sigmoid()
+            #     n = torch.nn.LogSigmoid()
+            # else:
+            #     m = torch.nn.Softmax(dim=1)
+            #     n = torch.nn.LogSoftmax(dim=1)
     
-    return js_div(torch.cat(outputs1), torch.cat(outputs2)).item()
+
+            # js_divs.append(js_div(output1, output2, m, n).item())
+    if task == "multi-label, binary-class":
+        m = torch.nn.Sigmoid()
+        n = torch.nn.LogSigmoid()
+    else:
+        m = torch.nn.Softmax(dim=1)
+        n = torch.nn.LogSoftmax(dim=1)
+    # return np.sum(js_divs) / len(data_loader.dataset)
+    return js_div(torch.cat(output1), torch.cat(output2), m, n).item()
 
 
 def dist_model_parameter(model1, model2, device):
@@ -172,26 +180,26 @@ def eval(
 
     target_result = {
         # "val": test(target_model, val_loader, task, criterion, n_classes, "cuda"),
-        "test": test(target_model, test_loader, task, criterion, n_classes, "cuda"),
-        "forget": test(target_model, forget_loader, task, criterion, n_classes, "cuda"),
-        "retain": test(target_model, retain_loader, task, criterion, n_classes, "cuda"),
+        # "test": test(target_model, test_loader, task, criterion, n_classes, "cuda"),
+        # "forget": test(target_model, forget_loader, task, criterion, n_classes, "cuda"),
+        # "retain": test(target_model, retain_loader, task, criterion, n_classes, "cuda"),
         # "mia_val": 100
         # * get_mia_efficiency(
         #     mia_forget_dataset, mia_retain_dataset, mia_val_dataset, target_model
         # ),
-        "mia_test": 100
-        * get_mia_efficiency(
-            mia_forget_dataset, mia_retain_dataset, mia_test_dataset, target_model
-        ),
-        "weight_dist": dist_model_parameter(target_model, retrain_model, device="cuda"),
+        # "mia_test": 100
+        # * get_mia_efficiency(
+        #     mia_forget_dataset, mia_retain_dataset, mia_test_dataset, target_model
+        # ),
+        # "weight_dist": dist_model_parameter(target_model, retrain_model, device="cuda"),
         'output_dist': dist_model_output(test_loader, task, target_model, retrain_model, device="cuda")
     }
     print(target_result)
-    with open(f"{retrain_dir_path}/eval.csv", "a") as f:
-        f.write(
-            # f'{label},{target_result["val"]},{target_result["test"]},{target_result["forget"]},{target_result["retain"]},{target_result["mia_val"]},{target_result["mia_test"]}\n'
-            f'{label},{target_result["test"]},{target_result["forget"]},{target_result["retain"]},{target_result["mia_test"]},{target_result["weight_dist"]}\n'
-        )
+    # with open(f"{retrain_dir_path}/eval.csv", "a") as f:
+    #     f.write(
+    #         # f'{label},{target_result["val"]},{target_result["test"]},{target_result["forget"]},{target_result["retain"]},{target_result["mia_val"]},{target_result["mia_test"]}\n'
+    #         f'{label},{target_result["test"]},{target_result["forget"]},{target_result["retain"]},{target_result["mia_test"]},{target_result["weight_dist"]},{target_result['output_dist']}\n'
+    #     )
 
 
 def main2(data_flag, rate, index, batch_size=128, num_workers=2):
