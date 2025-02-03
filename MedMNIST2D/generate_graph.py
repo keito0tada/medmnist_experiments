@@ -148,7 +148,8 @@ def main2(data_flag, rate, indexes, epochs):
 #         tex_table += tex_line(df, df.loc['retain'], f'RL_{epoch}_sal', f'SalUn ({epoch} epochs)')
 #     print(tex_table)
 
-def plot_ax(ax, data_flag, rate, indexes, epochs, target='RL_{}_sal', x=7, y=1):
+def plot_ax(ax, data_flag, rate, indexes, epochs, target='RL_{}_sal', x=7, y=1, retrain=True):
+    color = {0.1: 'r', 0.3: 'g', 0.5: 'b'}
     dfs = []
     for index in indexes:
         dfs.append(get_df(data_flag, rate, index, epochs))
@@ -158,25 +159,42 @@ def plot_ax(ax, data_flag, rate, indexes, epochs, target='RL_{}_sal', x=7, y=1):
     for epoch in epochs:
         data.append((df.loc[target.format(epoch), x], df.loc[target.format(epoch), y]))
     data.sort()
-    ax.plot([s for s, t in data], [t for s, t in data], label=f'{int(100 * rate)}%')
+    ax.plot([s for s, t in data], [t for s, t in data], color=color[rate], label=f'{int(100 * rate)}%')
+    if retrain:
+        ax.axhline(df.loc['retain', y], color=color[rate], ls=':', label=f'retrain {int(100 * rate)}%')
 
 
 def gen_graph(data_flag, indexes):
     epochs = range(5, 51, 5)
     
-    fig, axes = plt.subplots(1, 1)
+    fig, axes = plt.subplots(1, 2, figsize=(10, 5))
 
     for i in [0.1, 0.3, 0.5]:
-        plot_ax(axes, data_flag, i, indexes, epochs, x=7, y=1)
+        plot_ax(axes[0], data_flag, i, indexes, epochs, x=1, y=4)
 
-    axes.set_xlabel('Time')
-    axes.set_ylabel('TA')
-    axes.legend()
+    axes[0].set_xlabel('TA')
+    axes[0].set_ylabel('MIA')
+    axes[0].legend()
 
+    for i in [0.1, 0.3, 0.5]:
+        plot_ax(axes[1], data_flag, i, indexes, epochs, x=4, y=6, retrain=False)
+
+    axes[1].set_xlabel('MIA')
+    axes[1].set_ylabel('Ddist')
+    axes[1].legend()
+
+    # for i in [0.1, 0.3, 0.5]:
+    #     plot_ax(axes[2], data_flag, i, indexes, epochs, x=2, y=6, retrain=False)
+
+    # axes[2].set_xlabel('RA')
+    # axes[2].set_ylabel('Ddist')
+    # axes[2].legend()
+
+    # fig.suptitle('TissueMNIST, SalUn')
     plt.show()
 
-gen_graph('pathmnist', [0])
-gen_graph('octmnist', [0])
+# gen_graph('pathmnist', [0])
+# gen_graph('octmnist', [0])
 gen_graph('tissuemnist', [0])
 # main2('pathmnist', 0.1, [0], [5, 10])
 # main2('pathmnist', 0.3, [0], [5, 10])
